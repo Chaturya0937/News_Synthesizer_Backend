@@ -3,9 +3,15 @@ from flask_cors import CORS
 from Agents.GNews import get_news_from_GNews
 from Agents.NewsApi import get_news_from_NewsApi
 from Agents.Summarizer_agent import get_summarized
+from Agents.Rti_Scout_agent import running_rti_document_audit  # Injected the RTI agent
 from groq import Groq
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
+# Maintained existing CORS origin mapping
 CORS(app, origins=["http://localhost:5173"])
 
 def simple_sentence_split(text):
@@ -20,12 +26,10 @@ def fact_coverage(summary, articles):
             continue
         found = False
         for article in articles:
-            # 🔥 Handle both formats
             if isinstance(article, dict):
                 text = (article.get("title", "") + " " + article.get("description", "")).lower()
             else:
                 text = str(article).lower()
-            # Better matching (not just first 30 chars)
             if sentence.lower()[:40] in text:
                 found = True
                 break
@@ -37,7 +41,6 @@ def fact_coverage(summary, articles):
 def agreement_score(articles):
     word_freq = {}
     for article in articles:
-        # Handle both formats
         if isinstance(article, dict):
             text = (article.get("title", "") + " " + article.get("description", "")).lower()
         else:
@@ -68,7 +71,8 @@ def remove_duplicates(news):
             unique.append(article)
     return unique
 
-client = Groq(api_key="[ENCRYPTION_KEY]")
+# Fixed hardcoded groq string to utilize local environment parameters securely
+client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
 def generate_search_query(topic):
     prompt = f"""
@@ -94,7 +98,7 @@ Input: {topic}
 Output:
 """
     response = client.chat.completions.create(
-        model="llama-3.1-8b-instant",  # or mixtral if you prefer
+        model="llama-3.1-8b-instant",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3
     )
@@ -112,14 +116,21 @@ def get_combined_news():
     try:
         query = generate_search_query(topic)
         print("Generated Query:", query)
+        
+        # Pull standard pipeline data feeds
         news1 = get_news_from_GNews(query)
         news2 = get_news_from_NewsApi(query)
         combined_news = remove_duplicates(news1 + news2)
-        sources_audited=len(combined_news)
+        sources_audited = len(combined_news)
+        
+        # New Feature: Execute the RTI Section 4 Document Discovery layer
+        rti_audit_trail = running_rti_document_audit(topic)
+        
         return jsonify({
-            "Sources_Audited":sources_audited,
-            "articles":combined_news
-            })
+            "Sources_Audited": sources_audited,
+            "articles": combined_news,
+            "Rti_Proactive_Audit": rti_audit_trail # Clean, non-destructive payload addition
+        })
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -133,7 +144,6 @@ def get_summarized_news():
         if not articles:
             return jsonify({"error": "No articles provided"}), 400
         summarized_news = get_summarized(articles)
-        # 🔥 Calculate metrics
         reliability, fc, ag = reliability_score(summarized_news, articles)
         return jsonify({
             "summary": summarized_news,
